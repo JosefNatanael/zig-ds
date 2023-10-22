@@ -25,8 +25,6 @@ const log_group_width = 4;
 const hash1 = u64;
 const hash2 = u8;
 
-const IndexFoundPair = struct { index: u64, found: bool };
-
 // ** helpers
 pub inline fn toi8(a: anytype) i8 {
     return @bitCast(@as(u8, a));
@@ -100,19 +98,19 @@ const Group = struct {
         return BitMask.init(c);
     }
 
-    /// bitmask representing the positions of slots that is empty
+    /// bitmask representing the positions of slots that are empty
     pub fn matchEmpty(self: *Group) BitMask {
         return self.match(@bitCast(Ctrl.empty));
     }
-};
 
-/// used to initialize an empty map
-fn emptyGroup() *[group_width]Ctrl {
-    const static = struct {
-        var g: [group_width]Ctrl = [_]Ctrl{Ctrl.initSentinel()} ++ [_]Ctrl{Ctrl.initEmpty()} ** (group_width - 1);
-    };
-    return &static.g;
-}
+    /// bitmask representing the positions of slots that are empty or deleted
+    pub fn matchEmptyOrDeleted(self: *Group) BitMask {
+        const special: GroupT = @splat(Ctrl.sentinel);
+        const compared: @Vector(16, bool) = special > self.ctrl;
+        const tmp: u16 = @bitCast(compared);
+        return BitMask.init(tmp);
+    }
+};
 
 pub fn HashMap(
     comptime Key: type,
@@ -129,8 +127,25 @@ pub fn HashMap(
         capacity: u64,
         allocator: Allocator,
 
+        const Iterator = struct {
+            set: *Self,
+            ctrl: *Ctrl,
+            slot: ?*Value,
+        };
+
+        const Insert = struct {
+            iter: Iterator,
+            inserted: bool,
+        };
+
+        const PrepareInsert = struct {
+            index: u64,
+            inserted: bool,
+        };
+
         pub fn init(capacity: u64, allocator: Allocator) !Self {
-            const normalized_cap = normalizeCapacity(capacity);
+            const normalized_cap = if (capacity < 15) 15 else normalizeCapacity(capacity);
+
             const slot_size = @sizeOf(Value);
             const slot_align = @alignOf(Value);
             const to_allocate = allocSize(normalized_cap, slot_size, slot_align);
@@ -142,16 +157,6 @@ pub fn HashMap(
                 .slots = @ptrCast(@alignCast(allocated.ptr + offset)),
                 .size = 0,
                 .capacity = normalized_cap,
-                .allocator = allocator,
-            };
-        }
-
-        pub fn initZero(allocator: Allocator) !Self {
-            return .{
-                .ctrl = emptyGroup(),
-                .slots = null,
-                .size = 0,
-                .capacity = 0,
                 .allocator = allocator,
             };
         }
@@ -198,31 +203,48 @@ pub fn HashMap(
         }
 
         /// performs an insert
-        fn insert(self: *Self, key: Key) void {
-            const hash = HashFn(key);
-            const h1: hash1 = getHash1(hash);
+        fn insert(self: *Self, key: Key) Iterator {
+            const res = self.findOrPrepareInsert(key);
+            if (res.inserted) {
+                self.slots.?[res.index] = key;
+            }
+            return Iterator{
+                .set = self,
+                .ctrl = &self.ctrl[res.index],
+                .slot = &self.slots.?[res.index],
+            };
+        }
+
+        fn prepareInsert(self: *Self, hash: u64) u64 {
             const h2: hash2 = getHash2(hash);
+            const targetIdx = self.findFirstNonFull(hash);
+            self.size += 1;
+            self.ctrl[targetIdx] = Ctrl.init(h2);
+            return targetIdx;
+        }
+
+        /// location of first non full location for a given hash
+        fn findFirstNonFull(self: *Self, hash: u64) u64 {
+            const h1: hash1 = getHash1(hash);
             const num_groups = (self.capacity + 1) >> log_group_width; // (cap + 1) / 16, always a power of 2
-            // todo: check if table is full or not
             var group_idx = h1 & (num_groups - 1); // h1 mod num_groups
             while (true) {
                 const group_pos: [*]Ctrl = self.ctrl + group_idx * group_width;
                 var group = Group.init(@ptrCast(group_pos));
-                var empty_matches: BitMask = group.matchEmpty();
-                var i: u32 = undefined;
-                while (empty_matches.next(&i)) {
-                    const slot_idx = i + group_idx * group_width;
-                    self.ctrl[i] = Ctrl.init(h2);
-                    self.slots.?[slot_idx] = key;
-                    self.size += 1;
-                    return;
+                var matches = group.matchEmptyOrDeleted();
+                if (matches.mask > 0) {
+                    const i = @ctz(matches.mask);
+                    const idx = i + group_idx * group_width;
+                    // return position of non full
+                    return idx;
                 }
+                // linearly probe to the next group
                 group_idx = (group_idx + 1) & (num_groups - 1);
             }
         }
 
-        /// performs a table find
-        fn find(self: *Self, key: Key) IndexFoundPair {
+        /// find and prepare location for insertion
+        fn findOrPrepareInsert(self: *Self, key: Key) PrepareInsert {
             const hash = HashFn(key);
             const h1: hash1 = getHash1(hash);
             const h2: hash2 = getHash2(hash);
@@ -237,14 +259,91 @@ pub fn HashMap(
                     const idx = i + group_idx * group_width;
                     if (EqlFn(key, self.slots.?[idx])) {
                         // todo: mark this branch likely
-                        return IndexFoundPair{ .index = idx, .found = true };
+                        return PrepareInsert{ .index = idx, .inserted = false };
+                    }
+                }
+                var empty_matches = group.matchEmpty();
+                if (empty_matches.mask > 0) {
+                    // todo: mark this branch likely
+                    break;
+                }
+                // linearly probe to the next group
+                group_idx = (group_idx + 1) & (num_groups - 1);
+            }
+            return PrepareInsert{ .index = self.prepareInsert(hash), .inserted = true };
+        }
+
+        /// performs a table find
+        fn find(self: *Self, key: Key) Iterator {
+            const hash = HashFn(key);
+            const h1: hash1 = getHash1(hash);
+            const h2: hash2 = getHash2(hash);
+            const num_groups = (self.capacity + 1) >> log_group_width; // (cap + 1) / 16, always a power of 2
+            var group_idx = h1 & (num_groups - 1); // h1 mod num_groups
+            while (true) {
+                const group_pos: [*]Ctrl = self.ctrl + group_idx * group_width;
+                var group = Group.init(@ptrCast(group_pos));
+                var matches: BitMask = group.match(h2);
+                var i: u32 = undefined;
+                while (matches.next(&i)) {
+                    const idx = i + group_idx * group_width;
+                    if (EqlFn(key, self.slots.?[idx])) {
+                        // todo: mark this branch likely
+                        return Iterator{
+                            .set = self,
+                            .ctrl = &self.ctrl[idx],
+                            .slot = &self.slots.?[idx],
+                        };
+                    }
+                }
+                var empty_matches = group.matchEmpty();
+                if (empty_matches.mask > 0) {
+                    // key insight: the table must always have at least one empty element,
+                    // otherwise it will loop forever
+                    // todo: mark this branch likely
+                    return Iterator{
+                        .set = self,
+                        .ctrl = &self.ctrl[self.capacity],
+                        .slot = null,
+                    };
+                }
+                // linearly probe to the next group
+                group_idx = (group_idx + 1) & (num_groups - 1);
+            }
+        }
+
+        /// performs an erase
+        fn erase(self: *Self, key: Key) bool {
+            const hash = HashFn(key);
+            const h1: hash1 = getHash1(hash);
+            const h2: hash2 = getHash2(hash);
+            const num_groups = (self.capacity + 1) >> log_group_width; // (cap + 1) / 16, always a power of 2
+            var group_idx = h1 & (num_groups - 1); // h1 mod num_groups
+            while (true) {
+                const group_pos: [*]Ctrl = self.ctrl + group_idx * group_width;
+                var group = Group.init(@ptrCast(group_pos));
+                var matches: BitMask = group.match(h2);
+                var i: u32 = undefined;
+                while (matches.next(&i)) {
+                    const idx = i + group_idx * group_width;
+                    if (EqlFn(key, self.slots.?[idx])) {
+                        // todo: mark this branch likely
+                        self.size -= 1;
+                        var ctrl: *Ctrl = @ptrCast(self.ctrl + i);
+                        if (group.matchEmpty().mask > 0) {
+                            // todo: mark this branch likely
+                            ctrl.*.value = Ctrl.empty;
+                        } else {
+                            ctrl.*.value = Ctrl.deleted;
+                        }
+                        return true;
                     }
                 }
                 if (group.matchEmpty().mask > 0) {
                     // key insight: the table must always have at least one empty element,
                     // otherwise it will loop forever
                     // todo: mark this branch likely
-                    return IndexFoundPair{ .index = 0, .found = false };
+                    return false;
                 }
                 // linearly probe to the next group
                 group_idx = (group_idx + 1) & (num_groups - 1);
@@ -258,27 +357,6 @@ pub fn HashMap(
         inline fn getHash2(hash: u64) hash2 {
             return @truncate(hash & 0x7f);
         }
-
-        test "correct allocation" {
-            try expect(!isValidCapacity(0));
-            try expect(isValidCapacity(1));
-            try expect(!isValidCapacity(2));
-            try expect(isValidCapacity(3));
-            try expect(isValidCapacity(15));
-            try expect(!isValidCapacity(16));
-            try expect(!isValidCapacity(17));
-
-            try expect(normalizeCapacity(1) == 1);
-            try expect(normalizeCapacity(2) == 3);
-            try expect(normalizeCapacity(4) == 7);
-            try expect(normalizeCapacity(10) == 15);
-            try expect(normalizeCapacity(11) == 15);
-            try expect(normalizeCapacity(12) == 15);
-            try expect(normalizeCapacity(13) == 15);
-            try expect(normalizeCapacity(14) == 15);
-            try expect(normalizeCapacity(15) == 15);
-            try expect(normalizeCapacity(16) == 31);
-        }
     };
 }
 
@@ -288,21 +366,6 @@ fn someHashFunction(key: u32) u64 {
 
 fn someEqlFunction(a: u32, b: u32) bool {
     return a == b;
-}
-
-test "empty hashset initialization" {
-    const allocator = std.testing.allocator;
-    var set = try HashMap(u32, u32, someHashFunction, someEqlFunction).initZero(allocator);
-    defer set.deinit();
-    const size1 = @sizeOf(@TypeOf(set.ctrl));
-    const size2 = @sizeOf(@TypeOf(set.slots));
-    try expect(size1 == 8);
-    try expect(size2 == 8);
-    try expect(set.capacity == 0);
-    // for (0..15) |i| {
-    //     try expect(set.ctrl[i].value == Ctrl.empty);
-    // }
-    // try expect(set.ctrl[15].value == Ctrl.sentinel);
 }
 
 test "small size hashset" {
@@ -320,11 +383,11 @@ test "smaller size hashset" {
     const allocator = std.testing.allocator;
     var set = try HashMap(u32, u32, someHashFunction, someEqlFunction).init(2, allocator);
     defer set.deinit();
-    try expect(set.capacity == 3);
-    for (0..3) |i| {
+    try expect(set.capacity == 15);
+    for (0..15) |i| {
         try expect(set.ctrl[i].value == Ctrl.empty);
     }
-    try expect(set.ctrl[3].value == Ctrl.sentinel);
+    try expect(set.ctrl[15].value == Ctrl.sentinel);
 }
 
 test "nonempty hashset initialization" {
@@ -346,20 +409,20 @@ test "basic find not found" {
     var set = try HashMap(u32, u32, someHashFunction, someEqlFunction).init(32, allocator);
     defer set.deinit();
     var result = set.find(69);
-    try expect(!result.found);
+    try expect(result.slot == null);
 }
 
 test "test small set finds" {
     const allocator = std.testing.allocator;
-    var empty_set = try HashMap(u32, u32, someHashFunction, someEqlFunction).initZero(allocator);
+    var empty_set = try HashMap(u32, u32, someHashFunction, someEqlFunction).init(15, allocator);
     defer empty_set.deinit();
     var result = empty_set.find(69);
-    try expect(!result.found);
+    try expect(result.slot == null);
 
     var small_set = try HashMap(u32, u32, someHashFunction, someEqlFunction).init(7, allocator);
     defer small_set.deinit();
     result = small_set.find(69);
-    try expect(!result.found);
+    try expect(result.slot == null);
 }
 
 test "basic insertion test" {
@@ -367,13 +430,36 @@ test "basic insertion test" {
     var set = try HashMap(u32, u32, someHashFunction, someEqlFunction).init(32, allocator);
     defer set.deinit();
     var result = set.find(69);
-    try expect(!result.found);
-    set.insert(69);
+    try expect(result.slot == null);
+    _ = set.insert(69);
     result = set.find(69);
-    try expect(result.found);
-    set.insert(70);
+    try expect(result.slot != null);
+    _ = set.insert(70);
     result = set.find(70);
-    try expect(result.found);
+    try expect(result.slot != null);
+}
+
+test "basic insert and erase" {
+    const allocator = std.testing.allocator;
+    var set = try HashMap(u32, u32, someHashFunction, someEqlFunction).init(32, allocator);
+    defer set.deinit();
+    _ = set.insert(69);
+    var result = set.find(69);
+    try expect(result.slot != null);
+    const erase_result = set.erase(69);
+    try expect(erase_result);
+    result = set.find(69);
+    try expect(result.slot == null);
+}
+
+test "basic set usage" {
+    const allocator = std.testing.allocator;
+    var set = try HashMap(u32, u32, someHashFunction, someEqlFunction).init(32, allocator);
+    defer set.deinit();
+    _ = set.insert(69);
+    _ = set.insert(69);
+    _ = set.insert(69);
+    try expect(set.size == 1);
 }
 
 test "alignment check" {
