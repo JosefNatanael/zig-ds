@@ -1,24 +1,22 @@
 const std = @import("std");
+const itch = @import("itch.zig");
+const print = std.debug.print;
+const expect = std.testing.expect;
 
 pub fn main() !void {
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+    const t = itch.ItchMsgType.SYSEVENT;
+    const t_int = @intFromEnum(t);
+    const length = itch.netlen(t);
+    print("t is {} {}\n", .{ t, length });
+    print("t's value is {} {c}\n", .{ t_int, t_int });
+    const defaultSysEventType = itch.DefaultItchMsg(itch.ItchMsgType.SYSEVENT);
+    _ = defaultSysEventType;
+}
 
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
-
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
-
-    try bw.flush(); // don't forget to flush!
+test {
+    std.testing.refAllDecls(@This());
 }
 
 test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
+    try std.testing.expect(true);
 }
