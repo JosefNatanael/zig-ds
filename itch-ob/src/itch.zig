@@ -76,39 +76,39 @@ pub const Locate = u16;
 // little endian: LSB in small address, MSB in big address
 // e.g. 0x01234567 => small address 67 45 23 01 small address
 
-pub fn read8(src: [*]u8) u64 {
+pub fn read8(src: [*]const u8) u64 {
     return std.mem.readIntBig(u64, @ptrCast(src));
 }
 
-pub fn read6(src: [*]u8) u48 {
+pub fn read6(src: [*]const u8) u48 {
     return std.mem.readIntBig(u48, @ptrCast(src));
 }
 
-pub fn read4(src: [*]u8) u32 {
+pub fn read4(src: [*]const u8) u32 {
     return std.mem.readIntBig(u32, @ptrCast(src));
 }
 
-pub fn read2(src: [*]u8) u16 {
+pub fn read2(src: [*]const u8) u16 {
     return std.mem.readIntBig(u16, @ptrCast(src));
 }
 
-pub fn readOid(src: [*]u8) Oid {
+pub fn readOid(src: [*]const u8) Oid {
     return read8(src);
 }
 
-pub fn readTimestamp(src: [*]u8) Timestamp {
+pub fn readTimestamp(src: [*]const u8) Timestamp {
     return read6(src);
 }
 
-pub fn readPrice(src: [*]u8) Price {
+pub fn readPrice(src: [*]const u8) Price {
     return read4(src);
 }
 
-pub fn readQty(src: [*]u8) Qty {
+pub fn readQty(src: [*]const u8) Qty {
     return read4(src);
 }
 
-pub fn readLocate(src: [*]u8) Locate {
+pub fn readLocate(src: [*]const u8) Locate {
     return read2(src);
 }
 
@@ -118,8 +118,7 @@ pub fn readSide(src: u8) Side {
 
 /// This function issues a compile error if there is a problem with the
 /// provided itch message type. An itch message must have the following:
-/// member functions: pub fn parse(ptr: [*]u8) Self
-/// comptime field: comptime network_len: comptime_int
+/// member functions: pub fn parse(ptr: [*]const u8) Self
 pub fn verifyItchMessage(comptime ItchMsg: type) void {
     comptime {
         switch (@typeInfo(ItchMsg)) {
@@ -127,16 +126,16 @@ pub fn verifyItchMessage(comptime ItchMsg: type) void {
             else => @compileError("ItchMsg has to be a Struct type with parse member function"),
         }
 
-        if (!@hasField(ItchMsg, "network_len")) {
-            @compileError("ItchMsg needs network_len: comptime_int field");
-        }
-
-        var item: ItchMsg = undefined;
-        const network_len = @field(item, "network_len");
-        const field_info = @typeInfo(@TypeOf(network_len));
-        if (field_info != .ComptimeInt) {
-            @compileError("ItchMsg.network_len type has to be: comptime_int");
-        }
+        // comptime field: comptime network_len: comptime_int
+        // if (!@hasField(ItchMsg, "network_len")) {
+        //     @compileError("ItchMsg needs network_len: comptime_int field");
+        // }
+        // var item: ItchMsg = undefined;
+        // const network_len = @field(item, "network_len");
+        // const field_info = @typeInfo(@TypeOf(network_len));
+        // if (field_info != .ComptimeInt) {
+        //     @compileError("ItchMsg.network_len type has to be: comptime_int");
+        // }
 
         if (@hasDecl(ItchMsg, "parse")) {
             const parse = ItchMsg.parse;
@@ -144,10 +143,10 @@ pub fn verifyItchMessage(comptime ItchMsg: type) void {
             if (info == .Fn) {
                 const func = info.Fn;
                 if (func.params.len != 1) {
-                    @compileError("ItchMsg.parse(...) takes 1 parameter: [*]u8");
+                    @compileError("ItchMsg.parse(...) takes 1 parameter: [*]const u8");
                 } else {
-                    if (func.params[0].type != null and func.params[0].type.? != [*]u8) {
-                        @compileError("Argument has to be [*]u8");
+                    if (func.params[0].type != null and func.params[0].type.? != [*]const u8) {
+                        @compileError("Argument has to be [*]const u8");
                     }
                     if (func.return_type != null and func.return_type.? != ItchMsg) {
                         @compileError("Return type has to be Self");
@@ -162,26 +161,34 @@ pub fn verifyItchMessage(comptime ItchMsg: type) void {
     }
 }
 
-pub fn DefaultItchMsg(comptime msgType: ItchMsgType) type {
-    return struct {
-        comptime {
-            verifyItchMessage(@This());
-        }
+pub const DefaultItchMsg = struct {
+    comptime {
+        verifyItchMessage(@This());
+    }
 
-        comptime network_len: comptime_int = netlen(msgType),
+    pub fn parse(ptr: [*]const u8) @This() {
+        _ = ptr;
+        return .{};
+    }
+};
 
-        pub fn parse(ptr: [*]u8) @This() {
-            _ = ptr;
-            return .{};
-        }
-    };
-}
+// pub fn DefaultItchMsg() type {
+//     return struct {
+//         comptime {
+//             verifyItchMessage(@This());
+//         }
+//
+//         pub fn parse(ptr: [*]const u8) @This() {
+//             _ = ptr;
+//             return .{};
+//         }
+//     };
+// }
 
 pub const ItchMsgAddOrder = struct {
     comptime {
         verifyItchMessage(@This());
     }
-    comptime network_len: comptime_int = netlen(ItchMsgType.ADD_ORDER),
     timestamp: Timestamp,
     oid: Oid,
     price: Price,
@@ -189,11 +196,7 @@ pub const ItchMsgAddOrder = struct {
     locate: Locate,
     isBuy: Side,
 
-    // pub fn init(timestamp: Timestamp, oid: Oid, price: Price, qty: Qty, locate: Locate, isBuy: Side) @This() {
-    //     return .{ .timestamp = timestamp, .oid = oid, .price = price, .qty = qty, .locate = locate, .isBuy = isBuy };
-    // }
-
-    pub fn parse(ptr: [*]u8) @This() {
+    pub fn parse(ptr: [*]const u8) @This() {
         return .{
             .timestamp = readTimestamp(ptr + 5),
             .oid = readOid(ptr + 11),
@@ -209,7 +212,6 @@ pub const ItchMsgAddOrderMpid = struct {
     comptime {
         verifyItchMessage(@This());
     }
-    comptime network_len: comptime_int = netlen(ItchMsgType.ADD_ORDER_MPID),
     timestamp: Timestamp,
     oid: Oid,
     price: Price,
@@ -217,7 +219,7 @@ pub const ItchMsgAddOrderMpid = struct {
     locate: Locate,
     isBuy: Side,
 
-    pub fn parse(ptr: [*]u8) @This() {
+    pub fn parse(ptr: [*]const u8) @This() {
         return .{
             .timestamp = readTimestamp(ptr + 5),
             .oid = readOid(ptr + 11),
@@ -233,13 +235,12 @@ pub const ItchMsgExecuteOrder = struct {
     comptime {
         verifyItchMessage(@This());
     }
-    comptime network_len: comptime_int = netlen(ItchMsgType.EXECUTE_ORDER),
     timestamp: Timestamp,
     oid: Oid,
     qty: Qty,
     locate: Locate,
 
-    pub fn parse(ptr: [*]u8) @This() {
+    pub fn parse(ptr: [*]const u8) @This() {
         return .{
             .timestamp = readTimestamp(ptr + 5),
             .oid = readOid(ptr + 11),
@@ -253,13 +254,12 @@ pub const ItchMsgExecuteOrderWithPrice = struct {
     comptime {
         verifyItchMessage(@This());
     }
-    comptime network_len: comptime_int = netlen(ItchMsgType.EXECUTE_ORDER_WITH_PRICE),
     timestamp: Timestamp,
     oid: Oid,
     qty: Qty,
     locate: Locate,
 
-    pub fn parse(ptr: [*]u8) @This() {
+    pub fn parse(ptr: [*]const u8) @This() {
         return .{
             .timestamp = readTimestamp(ptr + 5),
             .oid = readOid(ptr + 11),
@@ -273,12 +273,11 @@ pub const ItchMsgReduceOrder = struct {
     comptime {
         verifyItchMessage(@This());
     }
-    comptime network_len: comptime_int = netlen(ItchMsgType.REDUCE_ORDER),
     timestamp: Timestamp,
     oid: Oid,
     qty: Qty,
 
-    pub fn parse(ptr: [*]u8) @This() {
+    pub fn parse(ptr: [*]const u8) @This() {
         return .{
             .timestamp = readTimestamp(ptr + 5),
             .oid = readOid(ptr + 11),
@@ -291,11 +290,10 @@ pub const ItchMsgDeleteOrder = struct {
     comptime {
         verifyItchMessage(@This());
     }
-    comptime network_len: comptime_int = netlen(ItchMsgType.DELETE_ORDER),
     timestamp: Timestamp,
     oid: Oid,
 
-    pub fn parse(ptr: [*]u8) @This() {
+    pub fn parse(ptr: [*]const u8) @This() {
         return .{
             .timestamp = readTimestamp(ptr + 5),
             .oid = readOid(ptr + 11),
@@ -307,13 +305,12 @@ pub const ItchMsgReplaceOrder = struct {
     comptime {
         verifyItchMessage(@This());
     }
-    comptime network_len: comptime_int = netlen(ItchMsgType.REPLACE_ORDER),
     oid: Oid,
     new_oid: Oid,
     new_qty: Qty,
     new_price: Price,
 
-    pub fn parse(ptr: [*]u8) @This() {
+    pub fn parse(ptr: [*]const u8) @This() {
         return .{
             .oid = readOid(ptr + 11),
             .new_oid = readOid(ptr + 19),
@@ -324,8 +321,7 @@ pub const ItchMsgReplaceOrder = struct {
 };
 
 test "sizes" {
-    const SampleDefault = DefaultItchMsg(ItchMsgType.SYSEVENT);
-    try expectEqual(0, @sizeOf(SampleDefault));
+    try expectEqual(0, @sizeOf(DefaultItchMsg));
     try expectEqual(32, @sizeOf(ItchMsgAddOrder));
     try expectEqual(32, @sizeOf(ItchMsgAddOrderMpid));
     try expectEqual(24, @sizeOf(ItchMsgExecuteOrder));
