@@ -59,12 +59,11 @@ pub fn StackBufferedReader(comptime buflen: comptime_int) type {
 
         pub fn discardToPos(self: *Self) void {
             if (self.pos > 0 and self.pos < self.limit) {
-                // alternatively, can use std.mem.copyBackwards, or memmove
-                @setRuntimeSafety(false);
-                var index = self.limit - self.pos;
-                while (index != 0) {
-                    index -= 1;
-                    self.buffer[index] = self.buffer[index + self.pos];
+                // alternatively, can use std.mem.copyForwards, or memmove
+                const items = self.limit - self.pos;
+                const offset = self.pos;
+                for (0..items) |index| {
+                    self.buffer[index] = self.buffer[index + offset];
                 }
             }
             self.limit -= self.pos;
