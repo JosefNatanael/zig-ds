@@ -2,3 +2,5 @@
 *.out
 *.a
 zig-cache/
+*.NASDAQ_ITCH50
+*.gz

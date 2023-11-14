@@ -1,5 +1,6 @@
 const std = @import("std");
 const itch = @import("itch.zig");
+const time = @import("time.zig");
 const bufferedreader = @import("bufferedreader.zig");
 const assert = std.debug.assert;
 const print = std.debug.print;
@@ -23,9 +24,10 @@ fn processor(comptime Msg: type, comptime BufSize: comptime_int, comptime MsgLen
 }
 
 pub fn main() !void {
-    const buflen = 4096;
+    const buflen = 1024;
     var buf = bufferedreader.StackBufferedReader(buflen).init();
     var num_packets: u64 = 0;
+    var start_time: i128 = undefined;
     while (buf.ensure(3) == bufferedreader.ReadStatus.OK) {
         if (num_packets > 0) {
             num_packets += 1;
@@ -76,16 +78,37 @@ pub fn main() !void {
             },
 
             .ADD_ORDER => {
-                _ = processor(itch.ItchMsgAddOrder, buflen, itch.netlen(.ADD_ORDER)).read_from(&buf);
+                if (num_packets == 0) {
+                    num_packets += 1;
+                    start_time = time.nanoTimestamp();
+                }
+                const packet = processor(itch.ItchMsgAddOrder, buflen, itch.netlen(.ADD_ORDER)).read_from(&buf);
+                assert(packet.oid < std.math.maxInt(i32));
             },
-            .ADD_ORDER_MPID => {},
-            .EXECUTE_ORDER => {},
-            .EXECUTE_ORDER_WITH_PRICE => {},
-            .REDUCE_ORDER => {},
-            .DELETE_ORDER => {},
-            .REPLACE_ORDER => {},
+            .ADD_ORDER_MPID => {
+                _ = processor(itch.ItchMsgAddOrderMpid, buflen, itch.netlen(.ADD_ORDER_MPID)).read_from(&buf);
+            },
+            .EXECUTE_ORDER => {
+                _ = processor(itch.ItchMsgExecuteOrder, buflen, itch.netlen(.EXECUTE_ORDER)).read_from(&buf);
+            },
+            .EXECUTE_ORDER_WITH_PRICE => {
+                _ = processor(itch.ItchMsgExecuteOrderWithPrice, buflen, itch.netlen(.EXECUTE_ORDER_WITH_PRICE)).read_from(&buf);
+            },
+            .REDUCE_ORDER => {
+                _ = processor(itch.ItchMsgReduceOrder, buflen, itch.netlen(.REDUCE_ORDER)).read_from(&buf);
+            },
+            .DELETE_ORDER => {
+                _ = processor(itch.ItchMsgDeleteOrder, buflen, itch.netlen(.DELETE_ORDER)).read_from(&buf);
+            },
+            .REPLACE_ORDER => {
+                _ = processor(itch.ItchMsgReplaceOrder, buflen, itch.netlen(.REPLACE_ORDER)).read_from(&buf);
+            },
         }
     }
+    const end_time = time.nanoTimestamp();
+    const nanos = end_time - start_time;
+    const mean_time = @as(f64, @floatFromInt(nanos)) / @as(f64, @floatFromInt(num_packets));
+    print("{} packets in {} nanos, {} nanos per packet\n", .{ num_packets, nanos, mean_time });
 }
 
 test {

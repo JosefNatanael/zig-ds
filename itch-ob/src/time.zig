@@ -3,7 +3,7 @@ const os = std.os;
 const print = std.debug.print;
 const ns_per_s: comptime_int = 1000 * 1000 * 1000;
 
-pub fn nanoTimestamp() u128 {
+pub fn nanoTimestamp() i128 {
     var ts: os.timespec = undefined;
     os.clock_gettime(os.CLOCK.REALTIME, &ts) catch |err| switch (err) {
         error.UnsupportedClock, error.Unexpected => return 0, // "Precision of timing depends on hardware and OS".
