@@ -15,16 +15,16 @@ fn processor(comptime Msg: type, comptime BufSize: comptime_int, comptime MsgLen
             const msglen = itch.read2(buf.get(0));
             assert(msglen == MsgLength);
             buf.advance(2); // first 2 bytes is the length of the payload
-            _ = buf.ensure(msglen);
+            _ = buf.ensure(MsgLength);
             const ret = Msg.parse(buf.get(0));
-            buf.advance(msglen);
+            buf.advance(MsgLength);
             return ret;
         }
     };
 }
 
 pub fn main() !void {
-    const buflen = 1024;
+    const buflen = 1024 * 16;
     var buf = bufferedreader.StackBufferedReader(buflen).init();
     var num_packets: u64 = 0;
     var start_time: i128 = undefined;

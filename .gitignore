@@ -4,3 +4,7 @@
 zig-cache/
 *.NASDAQ_ITCH50
 *.gz
+callgrind.out.*
+*.perf
+perf.data
+perf.data.old

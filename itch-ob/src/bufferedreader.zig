@@ -10,9 +10,9 @@ pub const ReadStatus = enum { OK, ERR };
 
 /// Buffered reader with the buffer stored in stack memory
 /// Layout:
-/// [..........................................]
-/// buffer      pos         limit              buffer + buflen
-/// <-------available--------><---freeSpace---->
+/// [.........................................]
+/// buffer   pos          limit              buffer + buflen
+///          <--available--><---freeSpace---->
 ///
 /// For nonblocking versions, checkout std.fs.File.read(...),
 /// which internally calls functions in std.os
@@ -36,23 +36,23 @@ pub fn StackBufferedReader(comptime buflen: comptime_int) type {
             };
         }
 
-        pub inline fn get(self: Self, idx: u32) [*]const u8 {
+        pub fn get(self: *Self, idx: u32) [*]const u8 {
             return @ptrCast(&self.buffer[self.pos + idx]);
         }
 
-        pub inline fn available(self: Self) u32 {
+        pub fn available(self: *Self) u32 {
             return self.limit - self.pos;
         }
 
-        pub inline fn isAvailable(self: Self, n: u32) bool {
+        pub fn isAvailable(self: *Self, n: u32) bool {
             return self.pos + n <= self.limit; // may be faster than available() >= n
         }
 
-        pub inline fn freeSpace(self: Self) u32 {
+        pub fn freeSpace(self: *Self) u32 {
             return buflen - self.limit;
         }
 
-        pub inline fn advance(self: *Self, bytes: u32) void {
+        pub fn advance(self: *Self, bytes: u32) void {
             self.pos += bytes;
             assert(self.pos <= self.limit);
         }
