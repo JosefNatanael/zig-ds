@@ -92,7 +92,7 @@ pub const Pool = struct {
     }
 
     pub fn dealloc(self: *Pool, idx: LevelId) void {
-        self.free.append(idx);
+        self.free.append(idx) catch unreachable;
     }
 };
 
@@ -100,12 +100,8 @@ pub const Pool = struct {
 /// The bids and asks of an order book is represented using a preallocated array of PriceLevel objects
 /// The bids and asks are ordered by the price. Indexing the price gives you information about the
 pub const OrderBook = struct {
-    // const maxbooks: comptime_int = 1 << 14;
-    // const numlevels: comptime_int = 1 << 20;
-    // const LevelVector =
     const SortedLevels = ArrayList(PriceLevel);
     const Self = OrderBook;
-    // var levels:
     bids: SortedLevels,
     asks: SortedLevels,
     global_levels: *Pool,
@@ -162,7 +158,7 @@ pub const OrderBook = struct {
                     break;
                 }
             }
-            self.global_levels.dealoc(order.level_id);
+            self.global_levels.dealloc(order.level_id);
         }
     }
 
@@ -176,6 +172,7 @@ pub const OrderBook = struct {
     }
 };
 
+/// All OrderBooks are created from FullOrderBook, which contains an array of OrderBooks by symbol
 pub const FullOrderBook = struct {
     const Self = FullOrderBook;
     const MAXOID = 1 << 28;
@@ -184,14 +181,22 @@ pub const FullOrderBook = struct {
 
     books: ArrayList(OrderBook), // one order book per symbol
     oid_map: OidMap,
-    levels: Pool,
+    var levels: ?Pool = null;
 
     pub fn init(allocator: Allocator) !Self {
+        if (FullOrderBook.levels == null) {
+            FullOrderBook.levels = try Pool.initCapacity(allocator, NUMLEVELS);
+        }
         var obj = Self{
             .books = try ArrayList(OrderBook).initCapacity(allocator, MAXBOOKS),
             .oid_map = try OidMap.init(allocator, MAXOID),
-            .levels = try Pool.initCapacity(allocator, NUMLEVELS),
         };
+
+        const loc = &FullOrderBook.levels.?;
+        for (0..NUMLEVELS) |_| {
+            try obj.books.append(OrderBook.init(allocator, loc));
+        }
+
         return obj;
     }
 
@@ -201,7 +206,10 @@ pub const FullOrderBook = struct {
         }
         self.books.deinit();
         self.oid_map.deinit();
-        self.levels.deinit();
+        if (levels != null) {
+            levels.?.deinit();
+            levels = null;
+        }
     }
 
     pub fn addOrder(self: *Self, oid: Oid, book_id: BookId, price: SignedPrice, qty: Qty) void {
@@ -227,20 +235,19 @@ pub const FullOrderBook = struct {
         if (qty == order.qty) {
             self.books.items[order.book_id].deleteOrder(order);
         } else {
-            self.books.items[order.book_id].reduceOrder(qty);
+            self.books.items[order.book_id].reduceOrder(order, qty);
         }
     }
 
     pub fn replaceOrder(self: *Self, old_oid: Oid, new_oid: Oid, new_qty: Qty, new_price: SignedPrice) void {
         const order = self.oid_map.get(old_oid);
         const book = &self.books.items[order.book_id];
-        const levels = self.levels.get(order.level_id);
-        const bid = priceIsBid(levels.price);
+        const bid = priceIsBid(levels.?.get(order.level_id).price);
         book.deleteOrder(order);
         if (bid) {
-            book.addOrder(new_oid, order.book_id, new_price, new_qty);
+            self.addOrder(new_oid, order.book_id, new_price, new_qty);
         } else {
-            book.addOrder(new_oid, order.book_id, -1 * new_price, new_qty);
+            self.addOrder(new_oid, order.book_id, -1 * new_price, new_qty);
         }
     }
 };
@@ -249,14 +256,17 @@ test "OrderBook initialization" {
     const allocator = std.testing.allocator;
     var fob = try FullOrderBook.init(allocator);
 
-    const hihi = 1 << 14;
-    const loc = &fob.levels;
-    for (0..hihi) |_| {
-        try fob.books.append(OrderBook.init(allocator, loc));
-    }
-
     fob.addOrder(0, 0, 100, 1);
     fob.addOrder(1, 0, 101, 2);
+    // add, then delete, then add, then reduce, then execute, then add, then replace, then delete
+    fob.addOrder(2, 0, 102, 3);
+    fob.deleteOrder(2);
+    fob.addOrder(3, 0, 102, 3);
+    fob.reduceOrder(3, 1);
+    fob.executeOrder(3, 2);
+    fob.addOrder(4, 0, 102, 3);
+    fob.replaceOrder(4, 5, 3, 101);
+    fob.deleteOrder(5);
 
     defer fob.deinit();
 }
