@@ -2,6 +2,7 @@ const std = @import("std");
 const itch = @import("itch.zig");
 const time = @import("time.zig");
 const bufferedreader = @import("bufferedreader.zig");
+const orderbook = @import("orderbook.zig");
 const assert = std.debug.assert;
 const print = std.debug.print;
 const expect = std.testing.expect;
@@ -28,6 +29,8 @@ pub fn main() !void {
     var buf = bufferedreader.StackBufferedReader(buflen).init();
     var num_packets: u64 = 0;
     var start_time: i128 = undefined;
+    const allocator = std.heap.page_allocator;
+    var fob = try orderbook.FullOrderBook.init(allocator);
     while (buf.ensure(3) == bufferedreader.ReadStatus.OK) {
         if (num_packets > 0) {
             num_packets += 1;
@@ -84,24 +87,31 @@ pub fn main() !void {
                 }
                 const packet = processor(itch.ItchMsgAddOrder, buflen, itch.netlen(.ADD_ORDER)).read_from(&buf);
                 assert(packet.oid < std.math.maxInt(i32));
+                fob.addOrder(@intCast(packet.oid), packet.locate, orderbook.makeSigned(packet.price, packet.isBuy), packet.qty);
             },
             .ADD_ORDER_MPID => {
-                _ = processor(itch.ItchMsgAddOrderMpid, buflen, itch.netlen(.ADD_ORDER_MPID)).read_from(&buf);
+                const packet = processor(itch.ItchMsgAddOrderMpid, buflen, itch.netlen(.ADD_ORDER_MPID)).read_from(&buf);
+                fob.addOrder(@intCast(packet.oid), packet.locate, orderbook.makeSigned(packet.price, packet.isBuy), packet.qty);
             },
             .EXECUTE_ORDER => {
-                _ = processor(itch.ItchMsgExecuteOrder, buflen, itch.netlen(.EXECUTE_ORDER)).read_from(&buf);
+                const packet = processor(itch.ItchMsgExecuteOrder, buflen, itch.netlen(.EXECUTE_ORDER)).read_from(&buf);
+                fob.executeOrder(@intCast(packet.oid), packet.qty);
             },
             .EXECUTE_ORDER_WITH_PRICE => {
-                _ = processor(itch.ItchMsgExecuteOrderWithPrice, buflen, itch.netlen(.EXECUTE_ORDER_WITH_PRICE)).read_from(&buf);
+                const packet = processor(itch.ItchMsgExecuteOrderWithPrice, buflen, itch.netlen(.EXECUTE_ORDER_WITH_PRICE)).read_from(&buf);
+                fob.executeOrder(@intCast(packet.oid), packet.qty);
             },
             .REDUCE_ORDER => {
-                _ = processor(itch.ItchMsgReduceOrder, buflen, itch.netlen(.REDUCE_ORDER)).read_from(&buf);
+                const packet = processor(itch.ItchMsgReduceOrder, buflen, itch.netlen(.REDUCE_ORDER)).read_from(&buf);
+                fob.reduceOrder(@intCast(packet.oid), packet.qty);
             },
             .DELETE_ORDER => {
-                _ = processor(itch.ItchMsgDeleteOrder, buflen, itch.netlen(.DELETE_ORDER)).read_from(&buf);
+                const packet = processor(itch.ItchMsgDeleteOrder, buflen, itch.netlen(.DELETE_ORDER)).read_from(&buf);
+                fob.deleteOrder(@intCast(packet.oid));
             },
             .REPLACE_ORDER => {
-                _ = processor(itch.ItchMsgReplaceOrder, buflen, itch.netlen(.REPLACE_ORDER)).read_from(&buf);
+                const packet = processor(itch.ItchMsgReplaceOrder, buflen, itch.netlen(.REPLACE_ORDER)).read_from(&buf);
+                fob.replaceOrder(@intCast(packet.oid), @intCast(packet.new_oid), packet.new_qty, orderbook.makeSigned(packet.new_price, itch.Side.BUY));
             },
         }
     }

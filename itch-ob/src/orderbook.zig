@@ -15,6 +15,16 @@ pub inline fn priceIsBid(price: SignedPrice) bool {
     return price >= 0;
 }
 
+pub fn makeSigned(price: itch.Price, side: itch.Side) SignedPrice {
+    return switch (side) {
+        .BUY => @intCast(price),
+        .SELL => {
+            const tmp: i32 = @intCast(price);
+            return -1 * tmp;
+        },
+    };
+}
+
 /// Level represents the quantity of orders for a given price level
 pub const Level = struct {
     price: SignedPrice,

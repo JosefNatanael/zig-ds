@@ -67,7 +67,6 @@ pub const Side = enum(u8) {
 pub const Timestamp = u48;
 pub const Oid = u64;
 pub const Price = u32;
-pub const SignedPrice = i32;
 pub const Qty = u32;
 pub const Locate = u16;
 
